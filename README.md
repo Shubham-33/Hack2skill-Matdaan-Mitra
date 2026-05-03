@@ -13,23 +13,31 @@ A multilingual, accessible election companion for Indian voters. Built for **Hac
 
 ## What it does
 
-Four tiles, one page, no login:
+A **chat assistant** — type or speak any election question, get a useful answer with sources.
 
-1. **🪪 Candidate Snapshot** — Pick any 2024 Lok Sabha constituency from 23 states. Get a Gemini-generated 3-bullet brief in your language with sourced facts (background, disclosed assets, pending cases as filed in the affidavit). 2,810 candidates indexed.
+### Sample conversations
 
-2. **🗳️ My Election** — Pick your state. Gemini Search Grounding fetches live election dates and registration deadlines, with citations to news/Wikipedia/ECI. Deeplinks to the official ECI portal so your EPIC ID never leaves your browser.
+| You ask | The assistant does |
+|---|---|
+| *"Who's running in Chennai Central?"* | Lists 31 candidates with party + winner indicators |
+| *"Tell me about Dayanidhi Maran"* | Gemini-generated 3-bullet brief over OpenCity 2024 affidavit data — background · disclosed assets · pending cases as filed |
+| *"When is the next election in Tamil Nadu?"* | Live dates via Gemini Search Grounding, with citations to ECI / Wikipedia / news |
+| *"Compare DMK and BJP on women's safety"* | Side-by-side table reading both manifesto PDFs (BJP · INC · DMK · CPI(M)), with page-number citations |
+| *"Create a squad for my family in Chennai Central, polling 15 May 2026"* | Returns a sharable join link + Google Calendar deeplink + WhatsApp share button |
+| *"दयानिधि मारन के बारे में बताइए"* | Same brief, in Devanagari — fuzzy-matches the Hindi name to the Latin record |
 
-3. **📑 Manifesto Diff** — Pick two parties + an issue. Gemini reads both manifestos (we ship 4 — BJP, INC, DMK, CPI(M)) and produces a side-by-side comparison table with **page citations** to the source PDFs.
-
-4. **👥 Voting Squad** — Create a squad → share a link via WhatsApp → friends/family check off "Registered / Researched / Voted." Group calendar invite via Google Calendar URL spec. **No OAuth.**
-
-Cross-cutting: **5 native languages** (English, Hindi, Tamil, Bengali, Marathi) + Gemini auto-translate fallback for any of the other 17 official Indian languages. **Voice input** (Web Speech API) and **read-aloud** (`window.speechSynthesis`) on every text block.
+### How it works
+1. Single chat input + voice mic 🎤 (Web Speech API)
+2. Gemini intent classifier reads your message + history → picks one of 9 intents → extracts params
+3. Backend dispatches to the right tool (candidate brief, election lookup, manifesto diff, squad create, etc.)
+4. Response renders inline as a structured card; tap 🔊 to read it aloud
+5. **5 native Indian languages** (EN/HI/TA/BN/MR) + Gemini fallback for 17 more
 
 ---
 
 ## Live demo
 
-Coming soon — deployable to Cloud Run with `web/deploy.sh` (see Deploy section).
+🔗 **https://matdaan-mitra-amigady5dq-el.a.run.app** (running on Cloud Run, asia-south1)
 
 ```bash
 # Local
@@ -41,12 +49,12 @@ open http://localhost:5050
 
 | Time | Action |
 |------|--------|
-| 0–5s | Open URL, language=Hindi pre-selected |
-| 5–20s | **Manifesto Diff** loads sample (DMK vs BJP, women's safety) — table of 5 substantive points with real page citations |
-| 20–35s | **Candidate Snapshot** for Chennai Central, brief in Hindi, source link to OpenCity affidavit data |
-| 35–55s | **Voting Squad** — fill form → create → "Add to Calendar" opens prefilled Google Calendar tab → "WhatsApp" opens share dialog |
-| 55–75s | **My Election** — pick Tamil Nadu → live dates from Gemini grounding with Wikipedia + ECI + news citations |
-| 75–90s | Tap mic 🎤 → speak "Tamil Nadu" → election info loads → tap 🔊 → response read aloud in Hindi |
+| 0–10s | Open URL, language=Hindi pre-selected via `?lang=hi`. Greeting + suggested prompts |
+| 10–25s | Tap *"Compare DMK and BJP on women's safety"* → side-by-side table, page citations |
+| 25–40s | Type *"who's running in chennai central"* → 31 candidate chips (auto-inferred Tamil Nadu) |
+| 40–55s | Tap one → 3-bullet Hindi brief, source link to OpenCity affidavit |
+| 55–70s | *"create a squad called Family for chennai central polling 15 May 2026, my name is Shubham"* → squad card with WhatsApp + Calendar buttons |
+| 70–90s | Tap mic 🎤 → speak "Tamil Nadu" → election dates load → tap 🔊 → response read aloud in Hindi |
 
 ---
 
@@ -65,12 +73,31 @@ execution/              # Deterministic Python (the "how")
   sync_candidates.py    # OpenCity CSV → web/data/candidates.json
   sync_manifestos.py    # PDFs → text-with-page-markers JSON
 web/                    # Flask app
-  app.py                # ~700 LOC, all routes + helpers
-  templates/            # index.html + squad.html + squad_not_found.html
+  app.py                # ~1100 LOC, all routes + helpers
+  templates/            # index.html (chat UI) + squad.html (join page)
   static/               # app.js + app.css (cache-busted via build_id)
   data/                 # shipped read-only data (candidates, manifestos)
-  tests/                # 51 tests, ~96% coverage
+  tests/                # 96 tests, 100% coverage gate
   deploy.sh             # Cloud Run + Secret Manager + IAM in one shot
+```
+
+### How a chat message flows
+```
+User types/speaks
+   ↓
+POST /api/chat { message, lang, history }
+   ↓
+_classify_intent() → Gemini Flash → { intent, params, reply }
+                     (auto-fallback to Flash-Lite if 429)
+   ↓
+_dispatch_intent(intent, params) → calls the right tool:
+   • candidate_brief  → Gemini brief over OpenCity affidavit row
+   • election_info    → Gemini Search Grounding for state dates
+   • manifesto_diff   → Gemini reads 2 manifestos → table with page cites
+   • create_squad     → JSON file + Calendar URL + WhatsApp URL
+   • list_*           → direct lookup, no LLM
+   ↓
+Frontend renders text bubble or structured card
 ```
 
 The agent (Claude) orchestrates: reads directives, calls execution scripts, fixes errors, updates directives with learnings. LLMs are probabilistic; business logic stays deterministic. See `CLAUDE.MD` for the full pattern.
@@ -126,7 +153,7 @@ We deliberately do **not** redistribute MyNeta data because their Terms of Use p
 | **Code Quality** | 3-layer architecture (directives / execution / app), type hints, section banners, ruff config, README, one-command setup, 700 LOC well-organized |
 | **Security** | No PII storage, no OAuth, Secret Manager for keys, `.gcloudignore` excludes `.env`, gzip middleware, `Cache-Control` headers, all routes input-validated |
 | **Efficiency** | Free-tier-only stack, gzip compression, asset caching with `build_id` query string, in-memory caches for election dates (1h TTL) and manifesto diffs (forever), `--min-instances=1 --cpu-boost` on Cloud Run |
-| **Testing** | **51/51 pytest tests passing, 95.78% coverage**, gate enforced via `pyproject.toml` `fail_under=85`. Mocks all external HTTP. |
+| **Testing** | **96/96 pytest tests passing, 100.00% coverage**, gate enforced via `pyproject.toml` `fail_under=100`. ruff-clean, GitHub Actions CI on every push. Mocks all external HTTP. |
 | **Accessibility** | 5 native Indian languages + Gemini fallback for 17 more, Web Speech TTS read-aloud on every text block, mic input for queries, keyboard ⌘/Ctrl+Enter shortcut, ARIA labels everywhere, focus rings, skip-to-content link, `role="status"` live regions, semantic HTML |
 | **Problem Alignment** | Direct: explains process (Candidate Snapshot, My Election), shows timelines (My Election dates), shows steps (Voting Squad checkboxes). Adds the *team collaboration* dimension via Squad. |
 | **Google Services** | Gemini 2.5 Flash · Gemini Search Grounding · Google Calendar (URL spec) · Google Maps (deeplink) · Web Speech API · Cloud Run · Secret Manager · Firebase Hosting (alt) — **8 Google services** |
@@ -192,4 +219,4 @@ Code: MIT. Data: Public Domain (per OpenCity's licensing of the underlying ECI s
 
 ## Built with
 
-**Hack2skill Solution Challenge 2026** · 3-day build · Python 3.10 · Flask 3 · Gemini 2.5 Flash · 51 tests · 95.78% coverage · zero credit cards.
+**Hack2skill Solution Challenge 2026** · 3-day build · Python 3.10 · Flask 3 · Gemini 2.5 Flash · **96 tests · 100% coverage** · zero credit cards.

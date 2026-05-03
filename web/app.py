@@ -1295,13 +1295,22 @@ def security_headers(response: Response) -> Response:
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
-        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
-        "img-src 'self' data: https://img.shields.io; "
-        "connect-src 'self'; "
+        # Tailwind CDN + Google client-side libraries (Maps, Identity, Translate)
+        "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+        "https://*.googleapis.com https://*.gstatic.com https://www.google.com; "
+        # Google Fonts + Tailwind
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        # Allow Google-hosted images (Maps tiles, party logos via Google search, badges)
+        "img-src 'self' data: https://*.google.com https://*.gstatic.com "
+        "https://*.googleusercontent.com https://img.shields.io; "
+        # Backend Gemini calls happen server-side, but allow client → Google APIs too
+        "connect-src 'self' https://*.googleapis.com https://*.google.com; "
+        # Allow embedded Google Maps / Calendar widgets if used on a squad page
+        "frame-src https://www.google.com https://calendar.google.com https://maps.google.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
-        "form-action 'self'"
+        "form-action 'self' https://www.google.com"
     )
     return response
 

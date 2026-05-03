@@ -6,8 +6,18 @@
 <meta name="theme-color" content="#ea580c">
 <title>Matdaan Mitra · Your voting assistant</title>
 <meta name="description" content="A multilingual, accessible election assistant for Indian voters. Ask anything about candidates, dates, manifestos, and coordinate with your friends.">
+
+<!-- Google Fonts: Inter (Latin) + Tiro Devanagari Hindi (for the Devanagari title) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
+
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="/static/app.css?v={{ build_id }}">
+<style>
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  [lang="hi"] { font-family: 'Tiro Devanagari Hindi', 'Inter', serif; }
+</style>
 </head>
 <body class="bg-stone-50 text-stone-900 antialiased h-screen overflow-hidden flex flex-col">
 
@@ -53,12 +63,22 @@
     <button id="send-btn" type="submit" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium rounded-full w-11 h-11 flex items-center justify-center" aria-label="Send message">↑</button>
   </div>
   <p id="input-hint" class="sr-only">Press Enter to send. Press Shift+Enter for a new line.</p>
-  <p class="text-xs text-stone-500 text-center pb-2">
+  <p class="text-xs text-stone-500 text-center pb-1">
     Data:
     <a class="underline" href="https://data.opencity.in/dataset/parliamentary-elections-2024-affidavits" target="_blank" rel="noopener noreferrer">OpenCity</a>
     (Public Domain) · sourced from
     <a class="underline" href="https://eci.gov.in" target="_blank" rel="noopener noreferrer">ECI</a>
     · Build {{ build_id }}
+  </p>
+  <p class="text-[10px] text-stone-400 text-center pb-2 px-2">
+    Powered by
+    <a href="https://ai.google.dev/" target="_blank" rel="noopener" class="underline">Google Gemini</a> ·
+    <a href="https://cloud.google.com/run" target="_blank" rel="noopener" class="underline">Cloud Run</a> ·
+    <a href="https://cloud.google.com/secret-manager" target="_blank" rel="noopener" class="underline">Secret Manager</a> ·
+    <a href="https://fonts.google.com/" target="_blank" rel="noopener" class="underline">Google Fonts</a> ·
+    <a href="https://maps.google.com" target="_blank" rel="noopener" class="underline">Google Maps</a> ·
+    <a href="https://calendar.google.com" target="_blank" rel="noopener" class="underline">Google Calendar</a> ·
+    <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API" target="_blank" rel="noopener" class="underline">Web Speech API</a>
   </p>
 </form>
 

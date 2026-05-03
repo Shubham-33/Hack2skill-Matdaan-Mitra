@@ -73,8 +73,18 @@ GEMINI_URL: Final[str] = (
 GEMINI_TIMEOUT_S: Final[int] = 12
 DEMO_MODE: Final[bool] = os.environ.get("DEMO_MODE", "").lower() in {"1", "true", "yes"}
 
-# Cache-bust static assets per playbook — file mtime → query-string version
-BUILD_ID: Final[str] = str(int(APP_DIR.joinpath("app.py").stat().st_mtime))
+# Cache-bust static assets per playbook. Use file mtime when meaningful (local dev),
+# fall back to module-load time (Cloud Run buildpacks reset mtime → epoch, so we'd
+# never bust the cache between deploys). Module-load time changes per container start,
+# which means every new deploy gets a fresh build_id.
+def _compute_build_id() -> str:
+    mtime = int(APP_DIR.joinpath("app.py").stat().st_mtime)
+    if mtime < 1_000_000_000:  # < 2001 ⇒ epoch reset (Cloud Build buildpacks)
+        return str(int(time.time()))
+    return str(mtime)
+
+
+BUILD_ID: Final[str] = _compute_build_id()
 
 SUPPORTED_LANGS: Final[dict[str, str]] = {
     "en": "English",

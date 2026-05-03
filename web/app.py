@@ -520,7 +520,7 @@ _CHAT_INTENT_SCHEMA: Final[dict] = {
                 "candidate_name": {"type": "string"},
                 "party_a": {"type": "string", "description": "Party slug: bjp|inc|dmk|cpim"},
                 "party_b": {"type": "string", "description": "Party slug: bjp|inc|dmk|cpim"},
-                "issue": {"type": "string", "description": "Issue key: women_safety|jobs|education|healthcare|climate|farmers|youth"},
+                "issue": {"type": "string", "description": "Issue topic the user asked to compare. Use natural words (e.g. 'women safety', 'jobs', 'employment', 'education', 'healthcare', 'climate', 'farmers', 'youth', 'agriculture'). The dispatcher normalizes — extract whatever issue the user mentioned, even if it doesn't exactly match the canonical list."},
                 "squad_name": {"type": "string"},
                 "polling_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "creator_name": {"type": "string"},
@@ -566,8 +566,18 @@ RULES:
 - Issue keys: women_safety, jobs, education, healthcare, climate, farmers, youth
 - For multi-turn conversations, infer context from prior messages (e.g. if user said \
   "Tamil Nadu" earlier and now asks "who's running in Chennai Central", combine them)
-- If a required param is missing, set needs_clarification=true and put the question in reply
+- BE AGGRESSIVE ABOUT INFERENCE. Use your knowledge of Indian politics:
+  * "Chennai Central" → state is TAMIL NADU
+  * "Mumbai South" → state is MAHARASHTRA
+  * "Bengaluru South" → state is KARNATAKA
+  * "Dayanidhi Maran" → name is enough; the dispatcher will search by name across all states
+  * If a famous candidate or constituency is named, fill in the state/constituency yourself \
+    rather than asking the user. Only ask for clarification if the entity is genuinely ambiguous.
+- For candidate_brief: if you have a candidate name, NEVER ask for clarification. The \
+  dispatcher does fuzzy search across all 23 states.
 - For smalltalk and help, set needs_clarification=false and write the full answer in reply
+- Set needs_clarification=true ONLY when (a) intent is clear but (b) a required param is \
+  missing AND (c) you cannot reasonably guess it.
 """
 
 
@@ -588,7 +598,8 @@ def _classify_intent(message: str, history: list[dict], lang_name: str) -> dict:
         + f"\n{history_block}\nUSER MESSAGE (in {lang_name}): {message}\n\n"
         f"Return JSON. The 'reply' field must be in {lang_name}."
     )
-    return _call_gemini(prompt, _CHAT_INTENT_SCHEMA, timeout=15, model=GEMINI_MODEL_FAST)
+    # Flash for reliable structured extraction; auto-falls-back to Flash-Lite on 429.
+    return _call_gemini(prompt, _CHAT_INTENT_SCHEMA, timeout=15)
 
 
 def _dispatch_intent(intent: str, params: dict, lang: str) -> dict:
@@ -650,7 +661,21 @@ def _dispatch_intent(intent: str, params: dict, lang: str) -> dict:
     if intent == "manifesto_diff":
         a = (p.get("party_a") or "").strip().lower()
         b = (p.get("party_b") or "").strip().lower()
-        issue = (p.get("issue") or "").strip()
+        # Normalize issue: lowercase, strip apostrophes, replace spaces/dashes with underscores
+        raw_issue = (p.get("issue") or "").strip().lower()
+        issue = re.sub(r"['']", "", raw_issue)
+        issue = re.sub(r"[\s-]+", "_", issue)
+        # Map common phrasings to canonical keys
+        _issue_aliases = {
+            "women": "women_safety", "gender": "women_safety", "safety": "women_safety",
+            "employment": "jobs", "economy": "jobs", "unemployment": "jobs",
+            "schools": "education", "school": "education",
+            "health": "healthcare", "medical": "healthcare",
+            "environment": "climate", "energy": "climate",
+            "farmer": "farmers", "agriculture": "farmers", "rural": "farmers",
+            "youth_employment": "youth", "skill": "youth", "skill_development": "youth",
+        }
+        issue = _issue_aliases.get(issue, issue)
         if a not in MANIFESTOS["parties"] or b not in MANIFESTOS["parties"] or a == b:
             return {"error": f"I have manifestos for: {', '.join(p['short'] for p in MANIFESTOS['parties'].values())}. Pick two different ones."}
         if issue not in ISSUES:
@@ -879,10 +904,35 @@ def api_chat() -> Response:
     needs_clarification = bool(intent_data.get("needs_clarification"))
     params = intent_data.get("params", {}) or {}
 
-    # If the model needs more info from the user, return the question — don't run a tool.
-    if needs_clarification or intent in {"smalltalk", "help", "unknown"}:
+    # Smalltalk/help/unknown never run tools.
+    if intent in {"smalltalk", "help", "unknown"}:
         return jsonify({"intent": intent, "reply": reply, "needs_clarification": needs_clarification,
                         "params": params})
+
+    # For candidate_brief: if we have ANY name, try fuzzy dispatch even if classifier flagged
+    # clarification (it's overly cautious about state/constituency inference).
+    if needs_clarification:
+        if intent == "candidate_brief" and (params.get("candidate_name") or "").strip():
+            needs_clarification = False
+        else:
+            return jsonify({"intent": intent, "reply": reply,
+                            "needs_clarification": True, "params": params})
+
+    # Belt-and-suspenders: if the classifier dropped the issue field, scan the message.
+    if intent == "manifesto_diff" and not (params.get("issue") or "").strip():
+        msg_lower = message.lower()
+        for kw, key in (
+            ("women", "women_safety"), ("gender", "women_safety"), ("safety", "women_safety"),
+            ("employ", "jobs"), ("job", "jobs"), ("econom", "jobs"), ("unemploy", "jobs"),
+            ("educat", "education"), ("school", "education"),
+            ("health", "healthcare"), ("medical", "healthcare"),
+            ("climate", "climate"), ("environment", "climate"), ("energy", "climate"),
+            ("farmer", "farmers"), ("agric", "farmers"), ("rural", "farmers"),
+            ("youth", "youth"), ("skill", "youth"),
+        ):
+            if kw in msg_lower:
+                params["issue"] = key
+                break
 
     tool_result = _dispatch_intent(intent, params, lang)
     return jsonify({

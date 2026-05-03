@@ -459,16 +459,19 @@ def test_gzip_skipped_when_response_too_small(app_mod):
 # ---------------------------------------------------------------------------
 
 def test_chat_rate_limit_blocks_after_max(app_mod, client, monkeypatch):
-    """When the per-IP bucket fills up, return 429 with rate_limited intent."""
-    # Lower the limit to make this test fast and deterministic
-    monkeypatch.setattr(app_mod, "RATE_LIMIT_MAX_REQUESTS", 2)
+    """When the per-IP bucket fills up, return 429 with rate_limited intent.
+
+    The limit constant lives in lib_security (where the limiter reads it from
+    at call time), so we patch it there — patching app_mod doesn't reach the
+    function's lexical scope.
+    """
+    import lib_security
+    monkeypatch.setattr(lib_security, "RATE_LIMIT_MAX_REQUESTS", 2)
     classifier = _intent("smalltalk", reply="hi")
     with patch.object(app_mod.requests, "post", return_value=classifier):
-        # First two should pass
         for _ in range(2):
             r = client.post("/api/chat", json={"message": "hi"})
             assert r.status_code == 200
-        # Third hits the cap
         r3 = client.post("/api/chat", json={"message": "hi"})
     assert r3.status_code == 429
     assert r3.get_json()["intent"] == "rate_limited"

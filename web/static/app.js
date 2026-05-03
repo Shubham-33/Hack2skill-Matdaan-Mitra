@@ -346,8 +346,10 @@ function speak(text, lang) {
 
 function startMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const status = document.getElementById("mic-status");
   if (!SR) {
     renderError("Voice input requires Chrome, Edge, or Safari.");
+    if (status) status.textContent = "Voice input not supported in this browser.";
     return;
   }
   const rec = new SR();
@@ -355,12 +357,22 @@ function startMic() {
   rec.interimResults = false;
   rec.maxAlternatives = 1;
   micBtn.textContent = "🎙️";
+  micBtn.setAttribute("aria-pressed", "true");
+  if (status) status.textContent = "Listening… speak your question.";
   rec.onresult = (e) => {
     input.value = e.results[0][0].transcript;
+    if (status) status.textContent = `Heard: ${input.value}. Sending.`;
     send();
   };
-  rec.onerror = () => { micBtn.textContent = "🎤"; };
-  rec.onend = () => { micBtn.textContent = "🎤"; };
+  rec.onerror = (e) => {
+    micBtn.textContent = "🎤";
+    micBtn.setAttribute("aria-pressed", "false");
+    if (status) status.textContent = `Voice input failed: ${e.error || "unknown"}.`;
+  };
+  rec.onend = () => {
+    micBtn.textContent = "🎤";
+    micBtn.setAttribute("aria-pressed", "false");
+  };
   rec.start();
 }
 

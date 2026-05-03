@@ -12,6 +12,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
 
+<!-- Google Translate Widget — provides instant translation to any language we don't natively support -->
+<script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" defer></script>
+
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="/static/app.css?v={{ build_id }}">
 <style>
@@ -30,7 +33,8 @@
       <p class="text-xs text-stone-500">Your voting assistant — ask anything</p>
     </div>
     <nav class="flex items-center gap-2 text-sm" aria-label="Conversation controls">
-      <button id="reset-btn" type="button" class="text-stone-500 hover:text-stone-900 px-3 py-2" title="Start a new conversation" aria-label="Start a new conversation">↻</button>
+      <div id="google_translate_element" class="hidden sm:block" aria-label="Translate page (Google Translate)"></div>
+      <button id="reset-btn" type="button" class="text-stone-600 hover:text-stone-900 px-3 py-2" title="Start a new conversation" aria-label="Start a new conversation">↻</button>
       <label class="flex items-center gap-2">
         <span class="sr-only">Reply language</span>
         <select id="lang-select" class="border border-stone-300 rounded px-2 py-2 bg-white" aria-label="Reply language">
@@ -43,7 +47,7 @@
   </div>
 </header>
 
-<main id="messages" class="flex-1 overflow-y-auto" role="main" aria-live="polite" aria-relevant="additions" aria-busy="false" aria-label="Conversation">
+<main id="messages" class="flex-1 overflow-y-auto" role="main" aria-live="polite" aria-atomic="false" aria-relevant="additions" aria-busy="false" aria-label="Conversation messages">
   <div class="max-w-3xl mx-auto px-4 py-6 space-y-4">
     <section id="welcome" class="text-center text-stone-600 mt-6" aria-labelledby="welcome-heading">
       <h2 id="welcome-heading" class="text-lg mb-2">👋 Namaste!</h2>
@@ -55,12 +59,13 @@
 
 <form id="chat-form" class="border-t border-stone-200 bg-white shrink-0" role="search" aria-label="Send a message">
   <div class="max-w-3xl mx-auto px-4 py-3 flex items-end gap-2">
-    <button id="mic-btn" type="button" class="border border-stone-300 rounded-full w-11 h-11 flex items-center justify-center bg-white hover:bg-stone-50" title="Speak your question (Web Speech API)" aria-label="Speak your question — opens microphone" aria-pressed="false">🎤</button>
+    <button id="mic-btn" type="button" class="border border-stone-400 rounded-full w-11 h-11 flex items-center justify-center bg-white hover:bg-stone-100 focus-visible:bg-stone-100" title="Speak your question (Web Speech API)" aria-label="Speak your question — opens microphone" aria-pressed="false">🎤</button>
+    <span id="mic-status" class="sr-only" aria-live="assertive" role="status"></span>
     <label class="flex-1">
       <span class="sr-only">Your question</span>
       <textarea id="chat-input" rows="1" placeholder="Ask anything about the election…" class="w-full border border-stone-300 rounded-2xl px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-orange-400 max-h-32" aria-label="Your question" aria-describedby="input-hint" maxlength="2000"></textarea>
     </label>
-    <button id="send-btn" type="submit" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium rounded-full w-11 h-11 flex items-center justify-center" aria-label="Send message">↑</button>
+    <button id="send-btn" type="submit" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-400 disabled:text-stone-100 text-white font-medium rounded-full w-11 h-11 flex items-center justify-center" aria-label="Send message">↑</button>
   </div>
   <p id="input-hint" class="sr-only">Press Enter to send. Press Shift+Enter for a new line.</p>
   <p class="text-xs text-stone-500 text-center pb-1">
@@ -81,6 +86,26 @@
     <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API" target="_blank" rel="noopener" class="underline">Web Speech API</a>
   </p>
 </form>
+
+<script>
+  // Initialize Google Translate widget — provides 100+ language fallback
+  function googleTranslateElementInit() {
+    new google.translate.TranslateElement({
+      pageLanguage: 'en',
+      includedLanguages: 'en,hi,ta,bn,mr,te,kn,ml,gu,pa,or,as,ur',
+      layout: google.translate.TranslateElement.InlineLayout.SIMPLE,
+      autoDisplay: false,
+    }, 'google_translate_element');
+  }
+</script>
+
+<noscript>
+  <p style="padding:1rem;background:#fff;color:#900;text-align:center;">
+    Matdaan Mitra needs JavaScript enabled to provide chat. For just the basics
+    — registration check at <a href="https://electoralsearch.eci.gov.in/">electoralsearch.eci.gov.in</a> —
+    you can visit ECI directly.
+  </p>
+</noscript>
 
 <script src="/static/app.js?v={{ build_id }}" defer></script>
 </body>

@@ -26,7 +26,6 @@ import os
 import re
 import secrets
 import time
-import urllib.parse as urllib_parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
@@ -41,6 +40,33 @@ from flask import (
     render_template,
     request,
 )
+
+# Pure-function helpers split into sibling modules (see ARCHITECTURE.md).
+# Imports are re-exported so the test suite can patch them via `app_mod.<name>`.
+from lib_dispatch import (  # noqa: F401
+    calendar_event_url,
+    eci_registration_url,
+    maps_search_url,
+    to_calendar_format,
+    whatsapp_share_url,
+)
+from lib_security import (  # noqa: F401
+    MAX_CHAT_MESSAGE_CHARS,
+    MAX_HISTORY_TURNS,
+    RATE_LIMIT,
+    RATE_LIMIT_MAX_REQUESTS,
+    RATE_LIMIT_WINDOW_S,
+)
+from lib_security import (
+    rate_limit_check as _rate_limit_check,
+)
+from lib_security import (
+    safe_error as _safe_error,
+)
+
+# Backwards-compat aliases for tests that reference the older private names.
+_to_calendar_format = to_calendar_format
+_RATE_LIMIT = RATE_LIMIT
 
 # ---------------------------------------------------------------------------
 # Config
@@ -79,11 +105,6 @@ def _gemini_url(model: str) -> str:
     return f"{GEMINI_BASE_URL}/{model}:generateContent"
 
 
-def _safe_error(exc: Exception) -> str:
-    """Strip API key from error messages before returning to client."""
-    msg = str(exc)[:500]
-    # API keys appear in URLs as ?key=AIzaSy...
-    return re.sub(r"[?&]key=[A-Za-z0-9_\-]+", "?key=REDACTED", msg)[:200]
 DEMO_MODE: Final[bool] = os.environ.get("DEMO_MODE", "").lower() in {"1", "true", "yes"}
 
 # Cache-bust static assets per playbook. Use file mtime when meaningful (local dev),
@@ -338,56 +359,10 @@ def _call_gemini_grounded(prompt: str) -> tuple[str, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
-# URL-spec dispatch (no OAuth — per hackathon-playbook rule #3)
+# URL-spec dispatch — implementations live in lib_dispatch.py
+# (calendar_event_url, whatsapp_share_url, maps_search_url, eci_registration_url,
+#  _to_calendar_format are imported at the top of this file)
 # ---------------------------------------------------------------------------
-
-def _to_calendar_format(iso_or_date: str) -> str:
-    """Convert 'YYYY-MM-DD' or full ISO 8601 → 'YYYYMMDDTHHMMSSZ' (Calendar URL format)."""
-    s = iso_or_date.strip()
-    if len(s) == 10 and s[4] == "-" and s[7] == "-":
-        # Date-only: assume 09:00 IST start of polling
-        dt = datetime.strptime(s + "T09:00:00+05:30", "%Y-%m-%dT%H:%M:%S%z")
-    else:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def calendar_event_url(*, title: str, start: str, end: str | None = None,
-                       details: str = "", location: str = "") -> str:
-    """Build a Google Calendar 'render' URL — opens in user's logged-in tab. No OAuth."""
-    start_cal = _to_calendar_format(start)
-    if end:
-        end_cal = _to_calendar_format(end)
-    else:
-        # 2-hour default slot
-        from datetime import timedelta
-        end_dt = datetime.strptime(start_cal, "%Y%m%dT%H%M%SZ") + timedelta(hours=2)
-        end_cal = end_dt.strftime("%Y%m%dT%H%M%SZ")
-    params = {
-        "action": "TEMPLATE",
-        "text": title,
-        "dates": f"{start_cal}/{end_cal}",
-        "details": details,
-        "location": location,
-    }
-    return "https://calendar.google.com/calendar/render?" + urllib_parse.urlencode(
-        {k: v for k, v in params.items() if v}
-    )
-
-
-def whatsapp_share_url(text: str) -> str:
-    """Open WhatsApp/WhatsApp Web with prefilled text. No auth."""
-    return "https://wa.me/?text=" + urllib_parse.quote(text)
-
-
-def maps_search_url(query: str) -> str:
-    """Open Google Maps with a prefilled search. No API key, no auth."""
-    return "https://maps.google.com/?q=" + urllib_parse.quote(query)
-
-
-def eci_registration_url() -> str:
-    """ECI's own voter portal — user enters EPIC ID directly there, never sent to us."""
-    return "https://electoralsearch.eci.gov.in/"
 
 
 # ---------------------------------------------------------------------------
@@ -1228,16 +1203,10 @@ def api_squad_checkin(squad_id: str) -> Response:
 # ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
-
-# Constants for input validation + rate limiting
-MAX_CHAT_MESSAGE_CHARS: Final[int] = 2000
-MAX_HISTORY_TURNS: Final[int] = 50
-RATE_LIMIT_WINDOW_S: Final[int] = 60
-RATE_LIMIT_MAX_REQUESTS: Final[int] = 30  # per IP per window — generous for legit users
-
-# Per-IP rate limit state. Hackathon-grade in-memory store; for a real deployment
-# you'd use Redis or Cloud Memorystore so rate limits survive container restarts.
-_RATE_LIMIT: dict[str, list[float]] = {}
+# Constants (MAX_CHAT_MESSAGE_CHARS, MAX_HISTORY_TURNS, RATE_LIMIT_*) and the
+# rate-limit / safe-error helpers live in lib_security.py (imported above).
+# Only the Flask-bound helpers (_client_ip + the @after_request middleware) are
+# defined here, since they need the request proxy / app instance.
 
 
 def _client_ip() -> str:
@@ -1246,26 +1215,6 @@ def _client_ip() -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.remote_addr or "unknown"
-
-
-def _rate_limit_check(key: str, max_requests: int | None = None,
-                      window_s: int | None = None) -> bool:
-    """Return True if `key` is within rate limit, False if exceeded.
-
-    Sliding window over the last `window_s` seconds. Defaults are looked up at
-    call time (not function-definition time) so tests can monkey-patch the
-    module-level constants.
-    """
-    cap = max_requests if max_requests is not None else RATE_LIMIT_MAX_REQUESTS
-    win = window_s if window_s is not None else RATE_LIMIT_WINDOW_S
-    now = time.time()
-    window_start = now - win
-    bucket = _RATE_LIMIT.setdefault(key, [])
-    bucket[:] = [t for t in bucket if t > window_start]  # drop expired
-    if len(bucket) >= cap:
-        return False
-    bucket.append(now)
-    return True
 
 
 @app.after_request
@@ -1295,19 +1244,23 @@ def security_headers(response: Response) -> Response:
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        # Tailwind CDN + Google client-side libraries (Maps, Identity, Translate)
+        # Tailwind CDN + Google client-side libraries (Maps, Translate, Fonts loader)
         "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
-        "https://*.googleapis.com https://*.gstatic.com https://www.google.com; "
-        # Google Fonts + Tailwind
-        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; "
+        "https://*.googleapis.com https://*.gstatic.com https://www.google.com "
+        "https://translate.google.com https://translate.googleapis.com; "
+        # Google Fonts + Tailwind + Translate widget styles
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+        "https://fonts.googleapis.com https://www.gstatic.com; "
         "font-src 'self' https://fonts.gstatic.com data:; "
-        # Allow Google-hosted images (Maps tiles, party logos via Google search, badges)
+        # Google-hosted images (Maps tiles, Translate flag icons, badges)
         "img-src 'self' data: https://*.google.com https://*.gstatic.com "
-        "https://*.googleusercontent.com https://img.shields.io; "
-        # Backend Gemini calls happen server-side, but allow client → Google APIs too
-        "connect-src 'self' https://*.googleapis.com https://*.google.com; "
-        # Allow embedded Google Maps / Calendar widgets if used on a squad page
-        "frame-src https://www.google.com https://calendar.google.com https://maps.google.com; "
+        "https://*.googleusercontent.com https://translate.googleapis.com https://img.shields.io; "
+        # Server-side Gemini, plus client → Google APIs (Translate runs in-browser)
+        "connect-src 'self' https://*.googleapis.com https://*.google.com "
+        "https://translate.googleapis.com; "
+        # Embedded Google Maps / Calendar / Translate widgets
+        "frame-src https://www.google.com https://calendar.google.com https://maps.google.com "
+        "https://translate.google.com; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self' https://www.google.com"

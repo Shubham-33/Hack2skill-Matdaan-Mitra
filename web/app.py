@@ -66,11 +66,23 @@ ISSUES: Final[dict[str, str]] = {
 }
 
 GEMINI_API_KEY: Final[str] = os.environ.get("GOOGLE_AI_API_KEY", "")
-GEMINI_MODEL: Final[str] = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-GEMINI_URL: Final[str] = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-)
+# Flash for high-quality outputs (briefs, manifesto diff, election grounding).
+# Flash-Lite for cheap routing/classification (6× higher daily quota: 1500 vs 250 RPD).
+GEMINI_MODEL_HIGH: Final[str] = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL_FAST: Final[str] = os.environ.get("GEMINI_MODEL_FAST", "gemini-2.5-flash-lite")
+GEMINI_BASE_URL: Final[str] = "https://generativelanguage.googleapis.com/v1beta/models"
 GEMINI_TIMEOUT_S: Final[int] = 12
+
+
+def _gemini_url(model: str) -> str:
+    return f"{GEMINI_BASE_URL}/{model}:generateContent"
+
+
+def _safe_error(exc: Exception) -> str:
+    """Strip API key from error messages before returning to client."""
+    msg = str(exc)[:500]
+    # API keys appear in URLs as ?key=AIzaSy...
+    return re.sub(r"[?&]key=[A-Za-z0-9_\-]+", "?key=REDACTED", msg)[:200]
 DEMO_MODE: Final[bool] = os.environ.get("DEMO_MODE", "").lower() in {"1", "true", "yes"}
 
 # Cache-bust static assets per playbook. Use file mtime when meaningful (local dev),
@@ -246,10 +258,17 @@ def _canned_brief(candidate: dict, lang: str) -> dict:
     }
 
 
-def _call_gemini(prompt: str, schema: dict, timeout: int | None = None) -> dict:
-    """One-shot Gemini call with structured output. Raises on failure."""
+def _call_gemini(prompt: str, schema: dict, timeout: int | None = None,
+                 model: str | None = None, fallback_on_429: bool = True) -> dict:
+    """One-shot Gemini call with structured output. Raises on failure.
+
+    If `fallback_on_429` is True (default) and the chosen model returns 429
+    (rate limit), automatically retries once with Flash-Lite (the bigger quota).
+    Set False for endpoints where Flash-Lite quality matters (e.g. manifesto diff).
+    """
     if not GEMINI_API_KEY:
         raise RuntimeError("GOOGLE_AI_API_KEY not configured")
+    chosen = model or GEMINI_MODEL_HIGH
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -259,10 +278,17 @@ def _call_gemini(prompt: str, schema: dict, timeout: int | None = None) -> dict:
         },
     }
     r = requests.post(
-        f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+        f"{_gemini_url(chosen)}?key={GEMINI_API_KEY}",
         json=payload,
         timeout=timeout or GEMINI_TIMEOUT_S,
     )
+    if r.status_code == 429 and fallback_on_429 and chosen != GEMINI_MODEL_FAST:
+        # Quota exhausted on the high-quality model — fall back to Flash-Lite
+        r = requests.post(
+            f"{_gemini_url(GEMINI_MODEL_FAST)}?key={GEMINI_API_KEY}",
+            json=payload,
+            timeout=timeout or GEMINI_TIMEOUT_S,
+        )
     r.raise_for_status()
     body = r.json()
     text = body["candidates"][0]["content"]["parts"][0]["text"]
@@ -282,7 +308,7 @@ def _call_gemini_grounded(prompt: str) -> tuple[str, list[dict]]:
         "generationConfig": {"temperature": 0.1},
     }
     r = requests.post(
-        f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+        f"{_gemini_url(GEMINI_MODEL_HIGH)}?key={GEMINI_API_KEY}",
         json=payload,
         timeout=GEMINI_TIMEOUT_S,
     )
@@ -546,7 +572,11 @@ RULES:
 
 
 def _classify_intent(message: str, history: list[dict], lang_name: str) -> dict:
-    """Run Gemini to figure out what the user wants and extract params."""
+    """Run Gemini to figure out what the user wants and extract params.
+
+    Uses Flash-Lite by default (1500 RPD vs 250 RPD on Flash) since intent
+    routing is cheap and a smaller model is plenty.
+    """
     history_block = ""
     if history:
         recent = history[-6:]
@@ -558,7 +588,7 @@ def _classify_intent(message: str, history: list[dict], lang_name: str) -> dict:
         + f"\n{history_block}\nUSER MESSAGE (in {lang_name}): {message}\n\n"
         f"Return JSON. The 'reply' field must be in {lang_name}."
     )
-    return _call_gemini(prompt, _CHAT_INTENT_SCHEMA, timeout=15)
+    return _call_gemini(prompt, _CHAT_INTENT_SCHEMA, timeout=15, model=GEMINI_MODEL_FAST)
 
 
 def _dispatch_intent(intent: str, params: dict, lang: str) -> dict:
@@ -788,7 +818,7 @@ def api_brief() -> Response:
     except (requests.Timeout, requests.ConnectionError):
         return jsonify({**_canned_brief(candidate, lang), "fallback_reason": "gemini_timeout"}), 200
     except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": "brief generation failed", "detail": str(exc)[:200]}), 503
+        return jsonify({"error": "brief generation failed", "detail": _safe_error(exc)}), 503
 
     brief["lang"] = lang
     brief["candidate"] = candidate["name"]
@@ -842,7 +872,7 @@ def api_chat() -> Response:
             "needs_clarification": False,
         })
     except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": "intent classification failed", "detail": str(exc)[:200]}), 503
+        return jsonify({"error": "intent classification failed", "detail": _safe_error(exc)}), 503
 
     intent = intent_data.get("intent", "unknown")
     reply = intent_data.get("reply", "")
@@ -942,7 +972,7 @@ def api_manifesto_diff() -> Response:
         payload = _canned_diff(slug_a, slug_b, issue, lang)
         return jsonify({**payload, "fallback_reason": "gemini_timeout"})
     except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": "diff generation failed", "detail": str(exc)[:200]}), 503
+        return jsonify({"error": "diff generation failed", "detail": _safe_error(exc)}), 503
 
     a = MANIFESTOS["parties"][slug_a]
     b = MANIFESTOS["parties"][slug_b]

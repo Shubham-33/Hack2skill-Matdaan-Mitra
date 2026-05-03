@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Matdaan Mitra · Your voting buddy</title>
+<meta name="description" content="A multilingual, accessible election companion for Indian voters. Understand the process, profile candidates, and vote together as a team.">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/static/app.css?v={{ build_id }}">
+</head>
+<body class="bg-stone-50 text-stone-900 antialiased">
+
+<a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-orange-600 text-white px-3 py-2 rounded">Skip to content</a>
+
+<header class="border-b border-stone-200 bg-white">
+  <div class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between gap-4">
+    <div>
+      <h1 class="text-xl font-bold">मतदान मित्र · Matdaan Mitra</h1>
+      <p class="text-sm text-stone-600">Your voting buddy — from registration to booth</p>
+    </div>
+    <div class="flex items-center gap-2 text-sm">
+      <button id="mic-btn" type="button" class="border border-stone-300 rounded px-2 py-1 bg-white hover:bg-stone-50" title="Voice search" aria-label="Voice search (Web Speech API)">🎤</button>
+      <label class="flex items-center gap-2">
+        <span class="sr-only">Language</span>
+        <select id="lang-select" class="border border-stone-300 rounded px-2 py-1 bg-white" aria-label="Select language">
+          {% for code, name in langs.items() %}
+          <option value="{{ code }}">{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="max-w-5xl mx-auto px-4 py-6 space-y-6">
+
+  <section aria-labelledby="t-snapshot" class="bg-white border border-stone-200 rounded-lg p-5">
+    <h2 id="t-snapshot" class="text-lg font-semibold mb-3">🪪 Candidate Snapshot</h2>
+    <p class="text-sm text-stone-600 mb-4">Look up any 2024 Lok Sabha candidate. Neutral 3-bullet brief, every fact sourced.</p>
+
+    <div class="grid sm:grid-cols-3 gap-3 mb-3">
+      <select id="state-select" class="border border-stone-300 rounded px-3 py-2" aria-label="State">
+        <option value="">State…</option>
+      </select>
+      <select id="const-select" class="border border-stone-300 rounded px-3 py-2" aria-label="Constituency" disabled>
+        <option value="">Constituency…</option>
+      </select>
+      <select id="cand-select" class="border border-stone-300 rounded px-3 py-2" aria-label="Candidate" disabled>
+        <option value="">Candidate…</option>
+      </select>
+    </div>
+
+    <button id="brief-btn" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium px-4 py-2 rounded focus:ring-2 focus:ring-orange-400" disabled>
+      Generate brief
+    </button>
+    <button id="sample-btn" class="ml-2 text-sm text-orange-700 underline">Load sample (Chennai Central)</button>
+
+    <div id="brief-output" class="mt-4" aria-live="polite"></div>
+  </section>
+
+  <section aria-labelledby="t-election" class="bg-white border border-stone-200 rounded-lg p-5">
+    <h2 id="t-election" class="text-lg font-semibold mb-3">🗳️ My Election</h2>
+    <p class="text-sm text-stone-600 mb-4">When's the next election in your state? Live answer via Gemini, with citations.</p>
+
+    <div class="flex flex-wrap gap-2 mb-3">
+      <select id="election-state-select" class="border border-stone-300 rounded px-3 py-2 flex-1 min-w-0" aria-label="State">
+        <option value="">State…</option>
+      </select>
+      <button id="election-btn" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium px-4 py-2 rounded focus:ring-2 focus:ring-orange-400" disabled>
+        When do I vote?
+      </button>
+    </div>
+
+    <div id="election-output" class="mt-2" aria-live="polite"></div>
+  </section>
+
+  <section aria-labelledby="t-manifesto" class="bg-white border border-stone-200 rounded-lg p-5">
+    <h2 id="t-manifesto" class="text-lg font-semibold mb-3">📑 Manifesto Diff</h2>
+    <p class="text-sm text-stone-600 mb-4">Pick two parties + an issue. Gemini reads both manifestos and shows positions side-by-side, with page citations.</p>
+
+    <div class="grid sm:grid-cols-3 gap-3 mb-3">
+      <select id="party-a" class="border border-stone-300 rounded px-3 py-2" aria-label="Party A">
+        <option value="">Party A…</option>
+      </select>
+      <select id="party-b" class="border border-stone-300 rounded px-3 py-2" aria-label="Party B">
+        <option value="">Party B…</option>
+      </select>
+      <select id="issue-select" class="border border-stone-300 rounded px-3 py-2" aria-label="Issue">
+        <option value="">Issue…</option>
+      </select>
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+      <button id="diff-btn" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium px-4 py-2 rounded focus:ring-2 focus:ring-orange-400" disabled>
+        Compare manifestos
+      </button>
+      <button id="diff-sample-btn" class="text-sm text-orange-700 underline">
+        Load sample (DMK vs BJP on women's safety)
+      </button>
+    </div>
+
+    <div id="diff-output" class="mt-4" aria-live="polite"></div>
+  </section>
+
+  <section aria-labelledby="t-squad" class="bg-white border border-stone-200 rounded-lg p-5">
+    <h2 id="t-squad" class="text-lg font-semibold mb-3">👥 Voting Squad</h2>
+    <p class="text-sm text-stone-600 mb-4">Pull friends/family in. Track who registered, researched, and voted. No login needed.</p>
+
+    <form id="squad-form" class="grid sm:grid-cols-2 gap-2">
+      <input id="squad-name" type="text" placeholder="Squad name (e.g., Family)" class="border border-stone-300 rounded px-3 py-2" required>
+      <input id="squad-creator" type="text" placeholder="Your name" class="border border-stone-300 rounded px-3 py-2" required>
+      <select id="squad-state" class="border border-stone-300 rounded px-3 py-2" required aria-label="State">
+        <option value="">State…</option>
+      </select>
+      <select id="squad-const" class="border border-stone-300 rounded px-3 py-2" disabled aria-label="Constituency">
+        <option value="">Constituency…</option>
+      </select>
+      <input id="squad-date" type="date" class="border border-stone-300 rounded px-3 py-2 sm:col-span-2" required aria-label="Polling date">
+      <button class="bg-orange-600 hover:bg-orange-700 text-white font-medium px-4 py-2 rounded sm:col-span-2 focus:ring-2 focus:ring-orange-400">Create Squad</button>
+    </form>
+
+    <div id="squad-output" class="mt-4" aria-live="polite"></div>
+  </section>
+
+</main>
+
+<footer class="max-w-5xl mx-auto px-4 py-6 text-xs text-stone-500">
+  <p>
+    Candidate data: <a class="underline" href="https://data.opencity.in/dataset/parliamentary-elections-2024-affidavits" target="_blank" rel="noopener">OpenCity</a> (Public Domain) · sourced from <a class="underline" href="https://eci.gov.in" target="_blank" rel="noopener">Election Commission of India</a>.
+    Verify any fact at <a class="underline" href="https://eci.gov.in" target="_blank" rel="noopener">eci.gov.in</a>.
+  </p>
+  <p class="mt-1">
+    Built for Hack2skill Solution Challenge 2026. Build {{ build_id }}.
+  </p>
+</footer>
+
+<script src="/static/app.js?v={{ build_id }}" defer></script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ squad.name }} · Voting Squad · Matdaan Mitra</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/static/app.css?v={{ build_id }}">
+</head>
+<body class="bg-stone-50 text-stone-900 antialiased">
+
+<header class="border-b border-stone-200 bg-white">
+  <div class="max-w-3xl mx-auto px-4 py-4">
+    <a href="/" class="text-sm text-orange-700 underline">← Matdaan Mitra</a>
+    <h1 class="text-xl font-bold mt-2">👥 {{ squad.name }}</h1>
+    <p class="text-sm text-stone-600">{{ squad.constituency }} · {{ squad.state }} · polling {{ squad.polling_date }}</p>
+  </div>
+</header>
+
+<main class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+
+  <section class="bg-white border border-stone-200 rounded-lg p-5">
+    <h2 class="text-lg font-semibold mb-3">Members</h2>
+    <p class="text-sm text-stone-600 mb-4">Tick the boxes as you complete each step.</p>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-stone-500 border-b border-stone-200">
+          <th class="pb-2">Member</th>
+          <th class="pb-2 text-center">Registered</th>
+          <th class="pb-2 text-center">Researched</th>
+          <th class="pb-2 text-center">Voted</th>
+        </tr>
+      </thead>
+      <tbody id="members-body">
+        {% for m in squad.members %}
+        <tr class="border-b border-stone-100" data-member="{{ m.name }}">
+          <td class="py-2">{{ m.name }}</td>
+          <td class="py-2 text-center"><input type="checkbox" data-flag="registered" {% if m.registered %}checked{% endif %} aria-label="{{ m.name }} registered"></td>
+          <td class="py-2 text-center"><input type="checkbox" data-flag="researched" {% if m.researched %}checked{% endif %} aria-label="{{ m.name }} researched"></td>
+          <td class="py-2 text-center"><input type="checkbox" data-flag="voted" {% if m.voted %}checked{% endif %} aria-label="{{ m.name }} voted"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <form id="join-form" class="mt-4 flex gap-2">
+      <input id="join-name" type="text" placeholder="Your name" class="border border-stone-300 rounded px-3 py-2 flex-1" required>
+      <button class="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded">Join squad</button>
+    </form>
+    <p id="join-status" class="text-sm mt-2" aria-live="polite"></p>
+  </section>
+
+  <section class="bg-white border border-stone-200 rounded-lg p-5">
+    <h2 class="text-lg font-semibold mb-3">Plan together</h2>
+    <div class="flex flex-wrap gap-2">
+      <a id="cal-link" href="#" target="_blank" rel="noopener" class="bg-stone-900 hover:bg-stone-800 text-white px-4 py-2 rounded">📅 Add to Google Calendar</a>
+      <a id="wa-link" href="#" target="_blank" rel="noopener" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded">💬 Share on WhatsApp</a>
+      <a id="maps-link" href="#" target="_blank" rel="noopener" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">📍 Find polling station</a>
+    </div>
+    <p class="text-xs text-stone-500 mt-3">
+      Calendar/WhatsApp open in your logged-in tab — we never see your account.
+    </p>
+  </section>
+
+</main>
+
+<footer class="max-w-3xl mx-auto px-4 py-6 text-xs text-stone-500">
+  Squad ID: <code>{{ squad.id }}</code> · share this URL to invite others.
+</footer>
+
+<script>
+const SQUAD_ID = "{{ squad.id }}";
+
+(async function init() {
+  const r = await fetch(`/api/squad/${SQUAD_ID}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  document.getElementById("cal-link").href = data.calendar_url;
+  document.getElementById("wa-link").href = data.whatsapp_share_url;
+  document.getElementById("maps-link").href = data.maps_url;
+})();
+
+document.getElementById("members-body").addEventListener("change", async (e) => {
+  if (e.target.tagName !== "INPUT" || e.target.type !== "checkbox") return;
+  const row = e.target.closest("tr");
+  const member = row.dataset.member;
+  const flag = e.target.dataset.flag;
+  await fetch(`/api/squad/${SQUAD_ID}/checkin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: member, [flag]: e.target.checked }),
+  });
+});
+
+document.getElementById("join-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const status = document.getElementById("join-status");
+  const name = document.getElementById("join-name").value.trim();
+  if (!name) return;
+  const r = await fetch(`/api/squad/${SQUAD_ID}/join`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    status.textContent = `⚠️ ${data.error || "could not join"}`;
+    status.className = "text-sm mt-2 text-red-700";
+    return;
+  }
+  location.reload();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+*.pem
+*.key
+
+# Intermediates (always regenerated)
+.tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Modal
+.modal/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test artifacts
+.coverage
+htmlcov/
+
+# Squad data — runtime mutable, not source
+web/data/squads.json
+
+# Manifesto PDF binaries — 29MB total. Re-downloaded on demand by execution/sync_manifestos.py.
+# The extracted text in web/data/manifestos.json IS committed (the app reads from there).
+web/data/manifestos/*.pdf
+
+# Stale hackathon-playbook copy at repo root — real one lives at ~/.claude/skills/hackathon-playbook/SKILL.md
+hackathon-playbook.md

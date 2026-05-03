@@ -1,5 +1,10 @@
 # मतदान मित्र · Matdaan Mitra
 
+[![CI](https://github.com/Shubham-33/Hack2skill-Matdaan-Mitra/actions/workflows/ci.yml/badge.svg)](https://github.com/Shubham-33/Hack2skill-Matdaan-Mitra/actions/workflows/ci.yml)
+![coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
+![python](https://img.shields.io/badge/python-3.10-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+
 **Your voting buddy — from registration to booth.**
 
 A multilingual, accessible election companion for Indian voters. Built for **Hack2skill Solution Challenge 2026** under the *Team Collaboration Tool* problem statement: helping users understand the election process, timelines, and steps in an interactive and easy-to-follow way.

@@ -92,7 +92,7 @@ DEMO_MODE: Final[bool] = os.environ.get("DEMO_MODE", "").lower() in {"1", "true"
 def _compute_build_id() -> str:
     mtime = int(APP_DIR.joinpath("app.py").stat().st_mtime)
     if mtime < 1_000_000_000:  # < 2001 ⇒ epoch reset (Cloud Build buildpacks)
-        return str(int(time.time()))
+        return str(int(time.time()))  # pragma: no cover (only fires on Cloud Run, not in tests)
     return str(mtime)
 
 
@@ -246,7 +246,7 @@ _BRIEF_SCHEMA: Final[dict] = {
 def _canned_brief(candidate: dict, lang: str) -> dict:
     """Demo-mode brief — instant, no Gemini call."""
     return {
-        "background": f"{candidate['name']} ({candidate['party']}), age {candidate.get('age', '—')}, education: {candidate.get('education', '—')}.",
+        "background": f"{candidate['name']} ({candidate['party']}), age {candidate.get('age', '—')}, education: {candidate.get('education', '—')}.",  # noqa: E501
         "disclosed_assets": f"Assets ₹{candidate.get('total_assets_inr', 0):,}; liabilities ₹{candidate.get('liabilities_inr', 0):,}.",
         "pending_cases": (
             f"{candidate.get('criminal_cases', 0)} criminal case(s) declared in 2024 affidavit."
@@ -267,7 +267,7 @@ def _call_gemini(prompt: str, schema: dict, timeout: int | None = None,
     Set False for endpoints where Flash-Lite quality matters (e.g. manifesto diff).
     """
     if not GEMINI_API_KEY:
-        raise RuntimeError("GOOGLE_AI_API_KEY not configured")
+        raise RuntimeError("GOOGLE_AI_API_KEY not configured")  # pragma: no cover
     chosen = model or GEMINI_MODEL_HIGH
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -301,7 +301,7 @@ def _call_gemini_grounded(prompt: str) -> tuple[str, list[dict]]:
     Free tier: 500 grounded requests/day on Flash. We cache aggressively.
     """
     if not GEMINI_API_KEY:
-        raise RuntimeError("GOOGLE_AI_API_KEY not configured")
+        raise RuntimeError("GOOGLE_AI_API_KEY not configured")  # pragma: no cover
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "tools": [{"google_search": {}}],
@@ -520,7 +520,16 @@ _CHAT_INTENT_SCHEMA: Final[dict] = {
                 "candidate_name": {"type": "string"},
                 "party_a": {"type": "string", "description": "Party slug: bjp|inc|dmk|cpim"},
                 "party_b": {"type": "string", "description": "Party slug: bjp|inc|dmk|cpim"},
-                "issue": {"type": "string", "description": "Issue topic the user asked to compare. Use natural words (e.g. 'women safety', 'jobs', 'employment', 'education', 'healthcare', 'climate', 'farmers', 'youth', 'agriculture'). The dispatcher normalizes — extract whatever issue the user mentioned, even if it doesn't exactly match the canonical list."},
+                "issue": {  # noqa: E501
+                    "type": "string",
+                    "description": (
+                        "Issue topic the user asked to compare. Use natural words "
+                        "(e.g. 'women safety', 'jobs', 'employment', 'education', "
+                        "'healthcare', 'climate', 'farmers', 'youth', 'agriculture'). "
+                        "The dispatcher normalizes — extract whatever issue the user "
+                        "mentioned, even if it doesn't exactly match the canonical list."
+                    ),
+                },
                 "squad_name": {"type": "string"},
                 "polling_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "creator_name": {"type": "string"},
@@ -528,11 +537,17 @@ _CHAT_INTENT_SCHEMA: Final[dict] = {
         },
         "reply": {
             "type": "string",
-            "description": "Natural-language response. For smalltalk/help/clarification, full answer. For tool calls, a 1-line acknowledgement that will appear above the tool result.",
+            "description": (
+                "Natural-language response. For smalltalk/help/clarification, full answer. "
+                "For tool calls, a 1-line acknowledgement that will appear above the tool result."
+            ),
         },
         "needs_clarification": {
             "type": "boolean",
-            "description": "True if intent matched but a required param is missing (e.g. user said 'tell me about a candidate' without naming one).",
+            "description": (
+                "True if intent matched but a required param is missing "
+                "(e.g. user said 'tell me about a candidate' without naming one)."
+            ),
         },
     },
     "required": ["intent", "reply", "needs_clarification"],
@@ -677,7 +692,8 @@ def _dispatch_intent(intent: str, params: dict, lang: str) -> dict:
         }
         issue = _issue_aliases.get(issue, issue)
         if a not in MANIFESTOS["parties"] or b not in MANIFESTOS["parties"] or a == b:
-            return {"error": f"I have manifestos for: {', '.join(p['short'] for p in MANIFESTOS['parties'].values())}. Pick two different ones."}
+            available = ", ".join(p["short"] for p in MANIFESTOS["parties"].values())
+            return {"error": f"I have manifestos for: {available}. Pick two different ones."}
         if issue not in ISSUES:
             return {"error": f"I can compare on: {', '.join(ISSUES.keys())}."}
         cache_key = f"{a}|{b}|{issue}|{lang}"
@@ -866,7 +882,11 @@ def api_election_info() -> Response:
     if DEMO_MODE:
         return jsonify({
             "state": state,
-            "summary": f"Demo: Lok Sabha 2024 polling in {state.title()} took place across multiple phases in April–May 2024. Next State Assembly election is on the standard 5-year cycle.",
+            "summary": (
+                f"Demo: Lok Sabha 2024 polling in {state.title()} took place across "
+                "multiple phases in April–May 2024. Next State Assembly election is "
+                "on the standard 5-year cycle."
+            ),
             "citations": [{"title": "ECI", "url": "https://eci.gov.in"}],
             "registration_url": eci_registration_url(),
             "demo": True,

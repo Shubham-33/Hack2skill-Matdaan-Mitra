@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
 # --- URL-spec helpers ----------------------------------------------------
 
 def test_calendar_event_url(app_mod):

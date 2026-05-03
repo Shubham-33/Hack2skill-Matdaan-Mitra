@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-
 # --- Suggestions ----------------------------------------------------------
 
 def test_suggestions_default(client):

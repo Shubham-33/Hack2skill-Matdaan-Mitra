@@ -153,6 +153,35 @@ def _find_candidate(state: str, constituency: str, name: str) -> dict | None:
     return None
 
 
+def _fuzzy_find_candidate(name: str) -> tuple[dict | None, str, str]:
+    """Search the whole dataset for the best name match. Returns (candidate, state, constituency).
+
+    Uses word-set overlap as primary signal (handles truncation/typos in either direction)
+    plus a substring check as a fast path. None if nothing meaningful matches.
+    """
+    needle_words = set(name.lower().split())
+    if not needle_words:
+        return None, "", ""
+
+    best: tuple[float, dict | None, str, str] = (0.0, None, "", "")
+    for s_key, consts in CANDIDATES["states"].items():
+        for c_key, cands in consts.items():
+            for c in cands:
+                cand_lower = c["name"].lower()
+                # Fast path: either side substring (handles "Dayanidhi Maran" vs "Dayanidhi Mara")
+                if name.lower() in cand_lower or cand_lower in name.lower():
+                    return c, s_key, c_key
+                # Fuzzy: Jaccard-ish overlap of word sets (handles word reorderings + truncations)
+                cand_words = set(cand_lower.split())
+                if not cand_words:
+                    continue
+                overlap = len(needle_words & cand_words) / max(len(needle_words), len(cand_words))
+                if overlap > best[0]:
+                    best = (overlap, c, s_key, c_key)
+
+    return (best[1], best[2], best[3]) if best[0] >= 0.5 else (None, "", "")
+
+
 def _resolve_lang(code: str | None) -> str:
     """Return the language *name* for prompting Gemini. Unknown → still passed through."""
     if not code:
@@ -427,6 +456,208 @@ def _canned_diff(slug_a: str, slug_b: str, issue_key: str, lang: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Chat assistant — Gemini intent classifier + dispatcher
+# ---------------------------------------------------------------------------
+
+_CHAT_INTENT_SCHEMA: Final[dict] = {
+    "type": "object",
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": [
+                "candidate_brief",        # "tell me about X"
+                "list_candidates",        # "who's running in Y"
+                "list_constituencies",    # "what constituencies in Z"
+                "election_info",          # "when is the election in X"
+                "manifesto_diff",         # "compare X and Y on Z"
+                "create_squad",           # "create a squad called X for Y"
+                "help",                   # "what can you do"
+                "smalltalk",              # greetings, thanks
+                "unknown",
+            ],
+        },
+        "params": {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "description": "Indian state name in CAPS, e.g. TAMIL NADU"},
+                "constituency": {"type": "string", "description": "Constituency name in CAPS"},
+                "candidate_name": {"type": "string"},
+                "party_a": {"type": "string", "description": "Party slug: bjp|inc|dmk|cpim"},
+                "party_b": {"type": "string", "description": "Party slug: bjp|inc|dmk|cpim"},
+                "issue": {"type": "string", "description": "Issue key: women_safety|jobs|education|healthcare|climate|farmers|youth"},
+                "squad_name": {"type": "string"},
+                "polling_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "creator_name": {"type": "string"},
+            },
+        },
+        "reply": {
+            "type": "string",
+            "description": "Natural-language response. For smalltalk/help/clarification, full answer. For tool calls, a 1-line acknowledgement that will appear above the tool result.",
+        },
+        "needs_clarification": {
+            "type": "boolean",
+            "description": "True if intent matched but a required param is missing (e.g. user said 'tell me about a candidate' without naming one).",
+        },
+    },
+    "required": ["intent", "reply", "needs_clarification"],
+}
+
+
+_CHAT_SYSTEM_PROMPT = """You are Matdaan Mitra, a friendly Indian election assistant. \
+You help voters understand candidates, elections, manifestos, and coordinate voting plans \
+with friends. Speak in the user's language (default: English). Keep replies concise (1-3 \
+sentences). Be warm but neutral — never editorialize about parties or candidates.
+
+Your job is to classify each user message into one of these intents and extract parameters:
+
+INTENTS:
+- candidate_brief — user wants details about a specific candidate (needs: candidate_name; \
+  prefer state+constituency if user gave them, otherwise leave blank and the dispatcher \
+  will search)
+- list_candidates — user wants candidates in a constituency (needs: state, constituency)
+- list_constituencies — user wants constituencies in a state (needs: state)
+- election_info — user wants election dates/timeline (needs: state)
+- manifesto_diff — user wants to compare two parties (needs: party_a, party_b, issue)
+- create_squad — user wants to make a Voting Squad (needs: squad_name, state, \
+  constituency, polling_date YYYY-MM-DD, creator_name)
+- help — user asks what you can do
+- smalltalk — greetings, thanks, chitchat
+- unknown — anything else (ask them to rephrase)
+
+RULES:
+- Indian state and constituency names go in ALL CAPS (e.g. "TAMIL NADU", "CHENNAI CENTRAL")
+- Party slugs are lowercase: bjp, inc (Congress), dmk, cpim (CPI(M))
+- Issue keys: women_safety, jobs, education, healthcare, climate, farmers, youth
+- For multi-turn conversations, infer context from prior messages (e.g. if user said \
+  "Tamil Nadu" earlier and now asks "who's running in Chennai Central", combine them)
+- If a required param is missing, set needs_clarification=true and put the question in reply
+- For smalltalk and help, set needs_clarification=false and write the full answer in reply
+"""
+
+
+def _classify_intent(message: str, history: list[dict], lang_name: str) -> dict:
+    """Run Gemini to figure out what the user wants and extract params."""
+    history_block = ""
+    if history:
+        recent = history[-6:]
+        history_block = "\nPRIOR CONVERSATION:\n" + "\n".join(
+            f"{m['role']}: {m['content']}" for m in recent if m.get("content")
+        ) + "\n"
+    prompt = (
+        _CHAT_SYSTEM_PROMPT
+        + f"\n{history_block}\nUSER MESSAGE (in {lang_name}): {message}\n\n"
+        f"Return JSON. The 'reply' field must be in {lang_name}."
+    )
+    return _call_gemini(prompt, _CHAT_INTENT_SCHEMA, timeout=15)
+
+
+def _dispatch_intent(intent: str, params: dict, lang: str) -> dict:
+    """Run the appropriate tool for an intent. Returns a dict with optional 'card' key."""
+    p = params or {}
+    if intent == "list_constituencies":
+        s = CANDIDATES["states"].get(_norm_key(p.get("state", "")))
+        if not s:
+            return {"error": f"I don't have data for {p.get('state', 'that state')}."}
+        return {"card": {"type": "constituencies", "state": p["state"],
+                         "constituencies": sorted(s.keys())}}
+
+    if intent == "list_candidates":
+        s = CANDIDATES["states"].get(_norm_key(p.get("state", "")))
+        if not s:
+            return {"error": f"I don't have data for {p.get('state', 'that state')}."}
+        cands = s.get(_norm_key(p.get("constituency", "")))
+        if not cands:
+            return {"error": f"I don't have data for {p.get('constituency', 'that constituency')} in {p['state']}."}
+        return {"card": {"type": "candidates", "state": p["state"],
+                         "constituency": p["constituency"], "candidates": cands}}
+
+    if intent == "candidate_brief":
+        name = (p.get("candidate_name") or "").strip()
+        state = p.get("state") or ""
+        const = p.get("constituency") or ""
+        cand = _find_candidate(state, const, name) if (state and const) else None
+        if not cand and name:
+            cand, state, const = _fuzzy_find_candidate(name)
+        if not cand:
+            return {"error": f"I couldn't find a candidate named '{name}'. Try giving me their state and constituency too."}
+        if DEMO_MODE:
+            brief = _canned_brief(cand, lang)
+        else:
+            try:
+                brief = _call_gemini(
+                    _brief_prompt(cand, state, const, _resolve_lang(lang)),
+                    _BRIEF_SCHEMA,
+                )
+                brief["candidate"] = cand["name"]
+                brief["party"] = cand["party"]
+                brief["source_url"] = CANDIDATES["source_url"]
+            except (requests.Timeout, requests.ConnectionError):
+                brief = {**_canned_brief(cand, lang), "fallback_reason": "gemini_timeout"}
+        return {"card": {"type": "brief", "state": state, "constituency": const,
+                         "candidate": cand["name"], "party": cand["party"], "data": brief}}
+
+    if intent == "election_info":
+        state = (p.get("state") or "").strip()
+        if not state:
+            return {"error": "Tell me which state you want election dates for."}
+        if DEMO_MODE:
+            info = {"state": state, "summary": f"Demo: {state} polled in 2024 LS election.",
+                    "citations": [], "registration_url": eci_registration_url(), "demo": True}
+        else:
+            info = _get_election_info(state, _resolve_lang(lang))
+        return {"card": {"type": "election", "data": info}}
+
+    if intent == "manifesto_diff":
+        a = (p.get("party_a") or "").strip().lower()
+        b = (p.get("party_b") or "").strip().lower()
+        issue = (p.get("issue") or "").strip()
+        if a not in MANIFESTOS["parties"] or b not in MANIFESTOS["parties"] or a == b:
+            return {"error": f"I have manifestos for: {', '.join(p['short'] for p in MANIFESTOS['parties'].values())}. Pick two different ones."}
+        if issue not in ISSUES:
+            return {"error": f"I can compare on: {', '.join(ISSUES.keys())}."}
+        cache_key = f"{a}|{b}|{issue}|{lang}"
+        cached = MANIFESTO_DIFF_CACHE.get(cache_key)
+        if cached:
+            return {"card": {"type": "diff", "data": {**cached, "cached": True}}}
+        if DEMO_MODE:
+            payload = _canned_diff(a, b, issue, lang)
+        else:
+            try:
+                result = _call_gemini(
+                    _diff_prompt(a, b, issue, _resolve_lang(lang)),
+                    _MANIFESTO_DIFF_SCHEMA,
+                    timeout=45,
+                )
+                pa = MANIFESTOS["parties"][a]
+                pb = MANIFESTOS["parties"][b]
+                payload = {**result, "party_a_slug": a, "party_b_slug": b,
+                           "party_a_short": pa["short"], "party_b_short": pb["short"],
+                           "party_a_source": pa["source_url"], "party_b_source": pb["source_url"],
+                           "lang": lang}
+            except (requests.Timeout, requests.ConnectionError):
+                payload = {**_canned_diff(a, b, issue, lang), "fallback_reason": "gemini_timeout"}
+        MANIFESTO_DIFF_CACHE[cache_key] = payload
+        return {"card": {"type": "diff", "data": payload}}
+
+    if intent == "create_squad":
+        required = ("squad_name", "state", "constituency", "polling_date", "creator_name")
+        missing = [k for k in required if not (p.get(k) or "").strip()]
+        if missing:
+            return {"error": f"I need: {', '.join(missing)} to create the squad."}
+        squad_id = _new_squad_id()
+        SQUADS[squad_id] = {
+            "id": squad_id, "name": p["squad_name"], "state": p["state"],
+            "constituency": p["constituency"], "polling_date": p["polling_date"],
+            "members": [{"name": p["creator_name"], "registered": False, "researched": False, "voted": False}],
+            "created_at": _now_iso(),
+        }
+        _save_squads(SQUADS)
+        return {"card": {"type": "squad", "data": SQUADS[squad_id]}}
+
+    return {}  # smalltalk / help / unknown — reply text alone is enough
+
+
+# ---------------------------------------------------------------------------
 # Election info (Gemini Search Grounding for live state-level dates)
 # ---------------------------------------------------------------------------
 
@@ -581,7 +812,73 @@ def api_election_info() -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Routes — Manifesto Diff
+# Route — Chat (the main user-facing entry; everything routes through here)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat() -> Response:
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    lang = data.get("lang", "en")
+    history = data.get("history") or []  # [{role: "user|assistant", content: "..."}]
+    if not message:
+        return jsonify({"error": "message required"}), 400
+
+    try:
+        intent_data = _classify_intent(message, history, _resolve_lang(lang))
+    except (requests.Timeout, requests.ConnectionError):
+        return jsonify({
+            "intent": "unknown", "reply": "Sorry, I couldn't reach the AI. Try again in a moment.",
+            "needs_clarification": False,
+        })
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": "intent classification failed", "detail": str(exc)[:200]}), 503
+
+    intent = intent_data.get("intent", "unknown")
+    reply = intent_data.get("reply", "")
+    needs_clarification = bool(intent_data.get("needs_clarification"))
+    params = intent_data.get("params", {}) or {}
+
+    # If the model needs more info from the user, return the question — don't run a tool.
+    if needs_clarification or intent in {"smalltalk", "help", "unknown"}:
+        return jsonify({"intent": intent, "reply": reply, "needs_clarification": needs_clarification,
+                        "params": params})
+
+    tool_result = _dispatch_intent(intent, params, lang)
+    return jsonify({
+        "intent": intent,
+        "reply": reply or "",
+        "params": params,
+        "needs_clarification": False,
+        **tool_result,
+    })
+
+
+@app.route("/api/suggestions")
+def api_suggestions() -> Response:
+    """Starter prompts for the chat UI — multilingual."""
+    lang = request.args.get("lang", "en")
+    by_lang = {
+        "en": [
+            "Compare DMK and BJP on women's safety",
+            "When is the next election in Tamil Nadu?",
+            "Who's running in Chennai Central?",
+            "Tell me about Dayanidhi Maran",
+            "Create a squad for my family",
+        ],
+        "hi": [
+            "DMK और BJP की तुलना महिला सुरक्षा पर करें",
+            "तमिलनाडु में अगला चुनाव कब है?",
+            "चेन्नई सेंट्रल में कौन खड़ा है?",
+            "दयानिधि मारन के बारे में बताइए",
+            "मेरे परिवार के लिए स्क्वाड बनाएं",
+        ],
+    }
+    return jsonify({"suggestions": by_lang.get(lang, by_lang["en"])})
+
+
+# ---------------------------------------------------------------------------
+# Routes — Manifesto Diff (kept for direct API use; chat dispatches here too)
 # ---------------------------------------------------------------------------
 
 @app.route("/api/parties")

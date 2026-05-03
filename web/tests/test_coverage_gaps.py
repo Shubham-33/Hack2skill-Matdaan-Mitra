@@ -452,3 +452,86 @@ def test_gzip_skipped_when_response_too_small(app_mod):
         resp = Response(b"x" * 100, status=200)  # < 500 byte threshold
         out = app_mod.gzip_response(resp)
     assert out.headers.get("Content-Encoding") != "gzip"
+
+
+# ---------------------------------------------------------------------------
+# Security: rate limiting + input validation + IP extraction + headers
+# ---------------------------------------------------------------------------
+
+def test_chat_rate_limit_blocks_after_max(app_mod, client, monkeypatch):
+    """When the per-IP bucket fills up, return 429 with rate_limited intent."""
+    # Lower the limit to make this test fast and deterministic
+    monkeypatch.setattr(app_mod, "RATE_LIMIT_MAX_REQUESTS", 2)
+    classifier = _intent("smalltalk", reply="hi")
+    with patch.object(app_mod.requests, "post", return_value=classifier):
+        # First two should pass
+        for _ in range(2):
+            r = client.post("/api/chat", json={"message": "hi"})
+            assert r.status_code == 200
+        # Third hits the cap
+        r3 = client.post("/api/chat", json={"message": "hi"})
+    assert r3.status_code == 429
+    assert r3.get_json()["intent"] == "rate_limited"
+
+
+def test_chat_message_too_long(client):
+    big = "x" * 3000  # > 2000 char cap
+    r = client.post("/api/chat", json={"message": big})
+    assert r.status_code == 400
+    assert "too long" in r.get_json()["error"]
+
+
+def test_chat_history_too_long(client):
+    bad_hist = [{"role": "user", "content": "x"} for _ in range(60)]  # > 50 cap
+    r = client.post("/api/chat", json={"message": "hi", "history": bad_hist})
+    assert r.status_code == 400
+    assert "history" in r.get_json()["error"]
+
+
+def test_chat_history_not_a_list(client):
+    r = client.post("/api/chat", json={"message": "hi", "history": "oops"})
+    assert r.status_code == 400
+
+
+def test_client_ip_uses_x_forwarded_for(app_mod):
+    with app_mod.app.test_request_context("/x", headers={"X-Forwarded-For": "1.2.3.4, 10.0.0.1"}):
+        assert app_mod._client_ip() == "1.2.3.4"
+
+
+def test_client_ip_falls_back_to_remote_addr(app_mod):
+    with app_mod.app.test_request_context("/x", environ_base={"REMOTE_ADDR": "5.6.7.8"}):
+        assert app_mod._client_ip() == "5.6.7.8"
+
+
+def test_rate_limit_check_returns_false_when_full(app_mod):
+    """Direct unit test of the limiter: 3rd call exceeds a 2-call cap."""
+    app_mod._RATE_LIMIT.clear()
+    assert app_mod._rate_limit_check("test_key", max_requests=2, window_s=60) is True
+    assert app_mod._rate_limit_check("test_key", max_requests=2, window_s=60) is True
+    assert app_mod._rate_limit_check("test_key", max_requests=2, window_s=60) is False
+
+
+def test_security_headers_applied(client):
+    """Every response should carry the security headers."""
+    r = client.get("/api/health")
+    assert r.headers.get("Strict-Transport-Security")
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert r.headers.get("X-Frame-Options") == "DENY"
+    assert "default-src 'self'" in r.headers.get("Content-Security-Policy", "")
+    assert "microphone=(self)" in r.headers.get("Permissions-Policy", "")
+
+
+# ---------------------------------------------------------------------------
+# Problem alignment: explain_process intent
+# ---------------------------------------------------------------------------
+
+def test_chat_explain_process(app_mod, client):
+    """explain_process intent: classifier returns full instructional reply, no card."""
+    fake = _intent("explain_process",
+                   reply="Step 1: Visit voters.eci.gov.in. Step 2: Form 6. Step 3: Submit.")
+    with patch.object(app_mod.requests, "post", return_value=fake):
+        r = client.post("/api/chat", json={"message": "how do I register to vote?"})
+    body = r.get_json()
+    assert body["intent"] == "explain_process"
+    assert "Step 1" in body["reply"]
+    assert "card" not in body

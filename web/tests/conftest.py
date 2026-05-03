@@ -14,6 +14,17 @@ import pytest  # noqa: E402
 import app as app_module  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    """Clear the per-IP rate-limit bucket before each test.
+
+    Tests run rapid-fire from the same fake IP; without this the limiter would
+    kick in mid-suite and fail unrelated tests with 429.
+    """
+    app_module._RATE_LIMIT.clear()
+    yield
+
+
 @pytest.fixture
 def client():
     app_module.app.config["TESTING"] = True

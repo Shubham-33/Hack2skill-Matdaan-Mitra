@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#ea580c">
 <title>Matdaan Mitra · Your voting assistant</title>
 <meta name="description" content="A multilingual, accessible election assistant for Indian voters. Ask anything about candidates, dates, manifestos, and coordinate with your friends.">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -12,44 +13,52 @@
 
 <a href="#chat-input" class="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-orange-600 text-white px-3 py-2 rounded">Skip to chat input</a>
 
-<header class="border-b border-stone-200 bg-white shrink-0">
+<header class="border-b border-stone-200 bg-white shrink-0" role="banner">
   <div class="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
     <div>
-      <h1 class="text-lg font-bold">मतदान मित्र · Matdaan Mitra</h1>
+      <h1 class="text-lg font-bold"><span lang="hi">मतदान मित्र</span> · Matdaan Mitra</h1>
       <p class="text-xs text-stone-500">Your voting assistant — ask anything</p>
     </div>
-    <div class="flex items-center gap-2 text-sm">
-      <button id="reset-btn" type="button" class="text-stone-500 hover:text-stone-900 px-2 py-1" title="New conversation" aria-label="New conversation">↻</button>
+    <nav class="flex items-center gap-2 text-sm" aria-label="Conversation controls">
+      <button id="reset-btn" type="button" class="text-stone-500 hover:text-stone-900 px-3 py-2" title="Start a new conversation" aria-label="Start a new conversation">↻</button>
       <label class="flex items-center gap-2">
-        <span class="sr-only">Language</span>
-        <select id="lang-select" class="border border-stone-300 rounded px-2 py-1 bg-white" aria-label="Select language">
+        <span class="sr-only">Reply language</span>
+        <select id="lang-select" class="border border-stone-300 rounded px-2 py-2 bg-white" aria-label="Reply language">
           {% for code, name in langs.items() %}
           <option value="{{ code }}">{{ name }}</option>
           {% endfor %}
         </select>
       </label>
-    </div>
+    </nav>
   </div>
 </header>
 
-<main id="messages" class="flex-1 overflow-y-auto" aria-live="polite" aria-relevant="additions">
+<main id="messages" class="flex-1 overflow-y-auto" role="main" aria-live="polite" aria-relevant="additions" aria-busy="false" aria-label="Conversation">
   <div class="max-w-3xl mx-auto px-4 py-6 space-y-4">
-    <div id="welcome" class="text-center text-stone-600 mt-6">
-      <p class="text-lg mb-2">👋 Namaste!</p>
-      <p class="text-sm">Ask me about candidates, election dates, party manifestos, or to coordinate a vote with friends.</p>
-      <div id="suggestions" class="flex flex-wrap gap-2 mt-6 justify-center"></div>
-    </div>
+    <section id="welcome" class="text-center text-stone-600 mt-6" aria-labelledby="welcome-heading">
+      <h2 id="welcome-heading" class="text-lg mb-2">👋 Namaste!</h2>
+      <p class="text-sm">Ask me about candidates, election dates, the voting process, party manifestos, or to coordinate a vote with friends.</p>
+      <div id="suggestions" class="flex flex-wrap gap-2 mt-6 justify-center" role="list" aria-label="Suggested questions"></div>
+    </section>
   </div>
 </main>
 
-<form id="chat-form" class="border-t border-stone-200 bg-white shrink-0">
+<form id="chat-form" class="border-t border-stone-200 bg-white shrink-0" role="search" aria-label="Send a message">
   <div class="max-w-3xl mx-auto px-4 py-3 flex items-end gap-2">
-    <button id="mic-btn" type="button" class="border border-stone-300 rounded-full w-10 h-10 flex items-center justify-center bg-white hover:bg-stone-50" title="Voice input" aria-label="Voice input">🎤</button>
-    <textarea id="chat-input" rows="1" placeholder="Ask anything about the election…" class="flex-1 border border-stone-300 rounded-2xl px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-orange-400 max-h-32" aria-label="Message"></textarea>
-    <button id="send-btn" type="submit" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium rounded-full w-10 h-10 flex items-center justify-center" aria-label="Send">↑</button>
+    <button id="mic-btn" type="button" class="border border-stone-300 rounded-full w-11 h-11 flex items-center justify-center bg-white hover:bg-stone-50" title="Speak your question (Web Speech API)" aria-label="Speak your question — opens microphone" aria-pressed="false">🎤</button>
+    <label class="flex-1">
+      <span class="sr-only">Your question</span>
+      <textarea id="chat-input" rows="1" placeholder="Ask anything about the election…" class="w-full border border-stone-300 rounded-2xl px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-orange-400 max-h-32" aria-label="Your question" aria-describedby="input-hint" maxlength="2000"></textarea>
+    </label>
+    <button id="send-btn" type="submit" class="bg-orange-600 hover:bg-orange-700 disabled:bg-stone-300 text-white font-medium rounded-full w-11 h-11 flex items-center justify-center" aria-label="Send message">↑</button>
   </div>
+  <p id="input-hint" class="sr-only">Press Enter to send. Press Shift+Enter for a new line.</p>
   <p class="text-xs text-stone-500 text-center pb-2">
-    Data: <a class="underline" href="https://data.opencity.in/dataset/parliamentary-elections-2024-affidavits" target="_blank" rel="noopener">OpenCity</a> (Public Domain) · sourced from <a class="underline" href="https://eci.gov.in" target="_blank" rel="noopener">ECI</a> · Build {{ build_id }}
+    Data:
+    <a class="underline" href="https://data.opencity.in/dataset/parliamentary-elections-2024-affidavits" target="_blank" rel="noopener noreferrer">OpenCity</a>
+    (Public Domain) · sourced from
+    <a class="underline" href="https://eci.gov.in" target="_blank" rel="noopener noreferrer">ECI</a>
+    · Build {{ build_id }}
   </p>
 </form>
 

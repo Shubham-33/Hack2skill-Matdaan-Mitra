@@ -75,6 +75,7 @@ GEMINI_TIMEOUT_S: Final[int] = 12
 
 
 def _gemini_url(model: str) -> str:
+    """Build the Gemini generateContent endpoint URL for the given model slug."""
     return f"{GEMINI_BASE_URL}/{model}:generateContent"
 
 
@@ -90,6 +91,13 @@ DEMO_MODE: Final[bool] = os.environ.get("DEMO_MODE", "").lower() in {"1", "true"
 # never bust the cache between deploys). Module-load time changes per container start,
 # which means every new deploy gets a fresh build_id.
 def _compute_build_id() -> str:
+    """Cache-busting build_id derived from app.py mtime, with a runtime fallback.
+
+    Cloud Build buildpacks reset all file mtimes to the Unix epoch (1980), so
+    we fall back to current process start time when the mtime looks invalid.
+    Each new container instance therefore has a unique BUILD_ID, which busts
+    any browser cache holding a stale /static/app.js?v=...
+    """
     mtime = int(APP_DIR.joinpath("app.py").stat().st_mtime)
     if mtime < 1_000_000_000:  # < 2001 ⇒ epoch reset (Cloud Build buildpacks)
         return str(int(time.time()))  # pragma: no cover (only fires on Cloud Run, not in tests)
@@ -115,12 +123,14 @@ with CANDIDATES_PATH.open(encoding="utf-8") as _f:
 
 
 def _load_squads() -> dict:
+    """Read the persisted Voting Squad state from disk, or return an empty dict."""
     if SQUADS_PATH.exists():
         return json.loads(SQUADS_PATH.read_text(encoding="utf-8"))
     return {}
 
 
 def _save_squads(squads: dict) -> None:
+    """Persist the current squad dict to disk so state survives Flask reloads."""
     SQUADS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SQUADS_PATH.write_text(json.dumps(squads, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -130,6 +140,7 @@ ELECTION_CACHE: dict[str, tuple[float, dict]] = {}  # state → (expires_at, pay
 
 
 def _load_manifestos() -> dict:
+    """Read the pre-extracted manifesto JSON from disk, or return an empty stub."""
     if MANIFESTOS_PATH.exists():
         return json.loads(MANIFESTOS_PATH.read_text(encoding="utf-8"))
     return {"parties": {}, "source": "", "source_url": ""}
@@ -148,6 +159,7 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 60 * 60 * 24  # 1-day cache for static
 
 @app.context_processor
 def _inject_globals() -> dict:
+    """Make build_id and supported languages available in every Jinja template."""
     return {"build_id": BUILD_ID, "langs": SUPPORTED_LANGS}
 
 
@@ -388,6 +400,7 @@ def _new_squad_id() -> str:
 
 
 def _now_iso() -> str:
+    """Current UTC timestamp as an ISO-8601 string with second precision."""
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
 
@@ -441,6 +454,11 @@ def _manifesto_text(slug: str, max_pages: int = 60) -> str:
 
 
 def _diff_prompt(slug_a: str, slug_b: str, issue_key: str, lang_name: str) -> str:
+    """Build the LLM prompt for a side-by-side manifesto comparison.
+
+    Embeds the (truncated) text of both manifestos with [PAGE N] markers so
+    Gemini can return real page citations.
+    """
     a = MANIFESTOS["parties"][slug_a]
     b = MANIFESTOS["parties"][slug_b]
     issue_label = ISSUES.get(issue_key, issue_key)
@@ -507,6 +525,7 @@ _CHAT_INTENT_SCHEMA: Final[dict] = {
                 "election_info",          # "when is the election in X"
                 "manifesto_diff",         # "compare X and Y on Z"
                 "create_squad",           # "create a squad called X for Y"
+                "explain_process",        # "how do I vote / register / find my booth"
                 "help",                   # "what can you do"
                 "smalltalk",              # greetings, thanks
                 "unknown",
@@ -571,6 +590,11 @@ INTENTS:
 - manifesto_diff — user wants to compare two parties (needs: party_a, party_b, issue)
 - create_squad — user wants to make a Voting Squad (needs: squad_name, state, \
   constituency, polling_date YYYY-MM-DD, creator_name)
+- explain_process — user asks HOW to do something election-related: register to vote, \
+  find polling booth, what to bring on polling day, what's an EPIC card, eligibility \
+  rules, postal vote, NOTA, EVM, what to do if name's missing from list, etc. The \
+  reply field should contain the full step-by-step explanation in {lang}, ending with a \
+  prompt to verify on eci.gov.in.
 - help — user asks what you can do
 - smalltalk — greetings, thanks, chitchat
 - unknown — anything else (ask them to rephrase)
@@ -786,6 +810,7 @@ def _get_election_info(state: str, lang_name: str) -> dict:
 
 @app.route("/")
 def index() -> Response:
+    """Serve the chat UI shell. Cache-Control allows 5-min CDN caching of HTML."""
     resp = make_response(render_template("index.html"))
     resp.headers["Cache-Control"] = "public, max-age=300"
     return resp
@@ -793,6 +818,7 @@ def index() -> Response:
 
 @app.route("/api/health")
 def health() -> Response:
+    """Liveness probe — used by Cloud Run + manual smoke tests after deploy."""
     return jsonify({
         "ok": True,
         "build_id": BUILD_ID,
@@ -804,12 +830,14 @@ def health() -> Response:
 
 @app.route("/api/states")
 def api_states() -> Response:
+    """List every Indian state we have candidate data for, alphabetically."""
     states = sorted(CANDIDATES["states"].keys())
     return jsonify({"states": states, "count": len(states)})
 
 
 @app.route("/api/constituencies")
 def api_constituencies() -> Response:
+    """List constituencies in the given state. 404 if state is unknown."""
     state = request.args.get("state", "")
     s = CANDIDATES["states"].get(_norm_key(state))
     if not s:
@@ -819,6 +847,7 @@ def api_constituencies() -> Response:
 
 @app.route("/api/candidates")
 def api_candidates() -> Response:
+    """List all candidates for a (state, constituency) pair, with source attribution."""
     state = request.args.get("state", "")
     constituency = request.args.get("constituency", "")
     s = CANDIDATES["states"].get(_norm_key(state))
@@ -838,6 +867,7 @@ def api_candidates() -> Response:
 
 @app.route("/api/brief", methods=["POST"])
 def api_brief() -> Response:
+    """Generate a neutral 3-bullet candidate brief via Gemini in the chosen language."""
     data = request.get_json(silent=True) or {}
     state = data.get("state", "")
     constituency = data.get("constituency", "")
@@ -874,6 +904,11 @@ def api_brief() -> Response:
 
 @app.route("/api/election-info")
 def api_election_info() -> Response:
+    """Return election dates + ECI registration link for a state.
+
+    Uses Gemini Search Grounding for live data, with a 1-hour TTL cache and a
+    canned fallback when Gemini is unreachable.
+    """
     state = request.args.get("state", "").strip()
     lang = request.args.get("lang", "en")
     if not state:
@@ -902,12 +937,26 @@ def api_election_info() -> Response:
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat() -> Response:
+    """Main chat entry point. Validates, rate-limits, classifies intent, dispatches."""
+    # Per-IP rate limit (sliding window)
+    if not _rate_limit_check(f"chat:{_client_ip()}"):
+        return jsonify({
+            "intent": "rate_limited",
+            "reply": "You're sending messages too fast. Please wait a moment and try again.",
+            "needs_clarification": False,
+        }), 429
+
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
     lang = data.get("lang", "en")
     history = data.get("history") or []  # [{role: "user|assistant", content: "..."}]
+
     if not message:
         return jsonify({"error": "message required"}), 400
+    if len(message) > MAX_CHAT_MESSAGE_CHARS:
+        return jsonify({"error": f"message too long (max {MAX_CHAT_MESSAGE_CHARS} chars)"}), 400
+    if not isinstance(history, list) or len(history) > MAX_HISTORY_TURNS:
+        return jsonify({"error": f"invalid history (max {MAX_HISTORY_TURNS} turns)"}), 400
 
     try:
         intent_data = _classify_intent(message, history, _resolve_lang(lang))
@@ -924,8 +973,8 @@ def api_chat() -> Response:
     needs_clarification = bool(intent_data.get("needs_clarification"))
     params = intent_data.get("params", {}) or {}
 
-    # Smalltalk/help/unknown never run tools.
-    if intent in {"smalltalk", "help", "unknown"}:
+    # Smalltalk/help/unknown/explain_process never run tools — the reply text is the whole answer.
+    if intent in {"smalltalk", "help", "unknown", "explain_process"}:
         return jsonify({"intent": intent, "reply": reply, "needs_clarification": needs_clarification,
                         "params": params})
 
@@ -966,21 +1015,28 @@ def api_chat() -> Response:
 
 @app.route("/api/suggestions")
 def api_suggestions() -> Response:
-    """Starter prompts for the chat UI — multilingual."""
+    """Starter prompts for the chat UI — multilingual.
+
+    Mix is intentionally tilted toward *understanding* the process (matches the
+    problem statement: "help users understand the election process, timelines,
+    and steps") plus the team-collaboration angle (squad).
+    """
     lang = request.args.get("lang", "en")
     by_lang = {
         "en": [
-            "Compare DMK and BJP on women's safety",
+            "How do I register to vote?",
             "When is the next election in Tamil Nadu?",
+            "What's the step-by-step process on polling day?",
             "Who's running in Chennai Central?",
-            "Tell me about Dayanidhi Maran",
+            "Compare DMK and BJP on women's safety",
             "Create a squad for my family",
         ],
         "hi": [
-            "DMK और BJP की तुलना महिला सुरक्षा पर करें",
+            "मतदाता के रूप में पंजीकरण कैसे करें?",
             "तमिलनाडु में अगला चुनाव कब है?",
+            "मतदान के दिन क्या-क्या करना होता है?",
             "चेन्नई सेंट्रल में कौन खड़ा है?",
-            "दयानिधि मारन के बारे में बताइए",
+            "DMK और BJP की तुलना महिला सुरक्षा पर करें",
             "मेरे परिवार के लिए स्क्वाड बनाएं",
         ],
     }
@@ -993,6 +1049,7 @@ def api_suggestions() -> Response:
 
 @app.route("/api/parties")
 def api_parties() -> Response:
+    """List parties (with manifestos shipped) and the issues you can compare on."""
     parties = [
         {"slug": slug, "name": p["name"], "short": p["short"], "color": p["color"], "pages": p["page_count"]}
         for slug, p in MANIFESTOS["parties"].items()
@@ -1007,6 +1064,11 @@ def api_parties() -> Response:
 
 @app.route("/api/manifesto-diff", methods=["POST"])
 def api_manifesto_diff() -> Response:
+    """Side-by-side manifesto comparison on a specific issue, with page citations.
+
+    Caches forever in-process — manifesto text is immutable, so the same
+    (party_a, party_b, issue, lang) tuple always yields the same answer.
+    """
     data = request.get_json(silent=True) or {}
     slug_a = (data.get("a") or "").strip().lower()
     slug_b = (data.get("b") or "").strip().lower()
@@ -1064,6 +1126,7 @@ def api_manifesto_diff() -> Response:
 
 @app.route("/api/squad", methods=["POST"])
 def api_squad_create() -> Response:
+    """Create a Voting Squad and return the join URL + share/calendar deeplinks."""
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     state = (data.get("state") or "").strip()
@@ -1098,6 +1161,7 @@ def api_squad_create() -> Response:
 
 @app.route("/api/squad/<squad_id>")
 def api_squad_get(squad_id: str) -> Response:
+    """Return the current state of a squad plus all share/calendar/maps deeplinks."""
     squad = SQUADS.get(squad_id)
     if not squad:
         return jsonify({"error": "squad not found"}), 404
@@ -1118,6 +1182,7 @@ def api_squad_get(squad_id: str) -> Response:
 
 @app.route("/squad/<squad_id>")
 def squad_page(squad_id: str) -> Response:
+    """HTML page for joining/managing a squad. Renders 404 page if squad doesn't exist."""
     squad = SQUADS.get(squad_id)
     if not squad:
         return render_template("squad_not_found.html", squad_id=squad_id), 404
@@ -1126,6 +1191,7 @@ def squad_page(squad_id: str) -> Response:
 
 @app.route("/api/squad/<squad_id>/join", methods=["POST"])
 def api_squad_join(squad_id: str) -> Response:
+    """Add a new member to an existing squad. 409 if the name already exists."""
     squad = SQUADS.get(squad_id)
     if not squad:
         return jsonify({"error": "squad not found"}), 404
@@ -1142,6 +1208,7 @@ def api_squad_join(squad_id: str) -> Response:
 
 @app.route("/api/squad/<squad_id>/checkin", methods=["POST"])
 def api_squad_checkin(squad_id: str) -> Response:
+    """Update one member's checkboxes (registered/researched/voted). Persists to disk."""
     squad = SQUADS.get(squad_id)
     if not squad:
         return jsonify({"error": "squad not found"}), 404
@@ -1161,6 +1228,83 @@ def api_squad_checkin(squad_id: str) -> Response:
 # ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
+
+# Constants for input validation + rate limiting
+MAX_CHAT_MESSAGE_CHARS: Final[int] = 2000
+MAX_HISTORY_TURNS: Final[int] = 50
+RATE_LIMIT_WINDOW_S: Final[int] = 60
+RATE_LIMIT_MAX_REQUESTS: Final[int] = 30  # per IP per window — generous for legit users
+
+# Per-IP rate limit state. Hackathon-grade in-memory store; for a real deployment
+# you'd use Redis or Cloud Memorystore so rate limits survive container restarts.
+_RATE_LIMIT: dict[str, list[float]] = {}
+
+
+def _client_ip() -> str:
+    """Best-effort client IP from X-Forwarded-For (set by Cloud Run) or remote_addr."""
+    fwd = request.headers.get("X-Forwarded-For")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _rate_limit_check(key: str, max_requests: int | None = None,
+                      window_s: int | None = None) -> bool:
+    """Return True if `key` is within rate limit, False if exceeded.
+
+    Sliding window over the last `window_s` seconds. Defaults are looked up at
+    call time (not function-definition time) so tests can monkey-patch the
+    module-level constants.
+    """
+    cap = max_requests if max_requests is not None else RATE_LIMIT_MAX_REQUESTS
+    win = window_s if window_s is not None else RATE_LIMIT_WINDOW_S
+    now = time.time()
+    window_start = now - win
+    bucket = _RATE_LIMIT.setdefault(key, [])
+    bucket[:] = [t for t in bucket if t > window_start]  # drop expired
+    if len(bucket) >= cap:
+        return False
+    bucket.append(now)
+    return True
+
+
+@app.after_request
+def security_headers(response: Response) -> Response:
+    """Apply hardening headers to every response.
+
+    - HSTS: force HTTPS for a year (Cloud Run is HTTPS-only anyway, but protects
+      bookmarks and curls). max-age 1 year per OWASP.
+    - X-Content-Type-Options: prevent MIME sniffing.
+    - X-Frame-Options: deny embedding in iframes (clickjacking protection).
+    - Referrer-Policy: don't leak our internal URLs to outbound clicks.
+    - Permissions-Policy: disable unused browser APIs (camera, geolocation, USB)
+      while keeping microphone (we use Web Speech API).
+    - Content-Security-Policy: restrict resource loading. Our app loads Tailwind
+      CDN + Google Fonts (allowed); blocks everything else.
+    """
+    response.headers.setdefault("Strict-Transport-Security",
+                                "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "geolocation=(), camera=(), usb=(), magnetometer=(), accelerometer=(), "
+        "payment=(), microphone=(self)"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+        "img-src 'self' data: https://img.shields.io; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    return response
+
 
 @app.after_request
 def gzip_response(response: Response) -> Response:
